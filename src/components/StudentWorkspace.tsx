@@ -8,6 +8,7 @@ import {
   Cloud,
   CreditCard,
   Download,
+  Eye,
   FileLock2,
   FileText,
   Globe,
@@ -15,6 +16,7 @@ import {
   LayoutDashboard,
   Lock,
   LogOut,
+  Menu,
   MessageSquare,
   Moon,
   RefreshCw,
@@ -24,6 +26,7 @@ import {
   Sun,
   Users,
   WifiOff,
+  X,
   AlertCircle,
 } from 'lucide-react';
 import type {
@@ -43,7 +46,7 @@ import type {
   SupportMessage,
   SubscriptionTier,
 } from '../types.ts';
-import { decryptDocumentPayload, encryptDocumentFile } from '../utils/crypto.ts';
+import { decryptDocumentPayload, encryptDocumentFile, guessMimeType } from '../utils/crypto.ts';
 import { safeReadJson } from '../utils/http.ts';
 import { LANGUAGE_LABELS, t } from '../utils/i18n.ts';
 import { enqueueOfflineAction, type OfflineQueuedAction } from '../utils/offline.ts';
@@ -129,6 +132,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
     user.role === 'admin' || user.subscriptionTier === 'pro' || user.subscriptionTier === 'fellowship';
 
   const [activeTab, setActiveTab] = useState<StudentTab>(initialTab || 'overview');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toast, setToast] = useState<string>('');
   const [syncing, setSyncing] = useState(false);
 
@@ -193,6 +197,15 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
   const [vaultPassphrase, setVaultPassphrase] = useState('');
   const [decryptPassphrase, setDecryptPassphrase] = useState('');
   const [encrypting, setEncrypting] = useState(false);
+  const [vaultError, setVaultError] = useState('');
+  const [vaultSuccess, setVaultSuccess] = useState('');
+  const [localVaultDocs, setLocalVaultDocs] = useState<EncryptedDocument[]>([]);
+  const [decryptedPreview, setDecryptedPreview] = useState<{
+    fileName: string;
+    url: string;
+    mimeType: string;
+    textContent?: string;
+  } | null>(null);
 
   // Chat & AI Advisor state
   const [chatMode, setChatMode] = useState<'ai' | 'moderator'>('ai');
@@ -263,6 +276,11 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
     setCheckoutProgram(null);
     setBookingMentor(null);
     setSelectedTier(null);
+    setMobileMenuOpen(false);
+    setVaultError('');
+    setVaultSuccess('');
+    setLocalVaultDocs([]);
+    setDecryptedPreview(null);
     setBillingError('');
     setBillingReceipt(null);
     setBillingCardName(user.name);
@@ -564,18 +582,72 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
     }
   };
 
+  const allVaultDocuments = useMemo(() => {
+    const existingIds = new Set(documents.map((d) => d.id));
+    return [...localVaultDocs.filter((d) => !existingIds.has(d.id)), ...documents];
+  }, [localVaultDocs, documents]);
+
   const handleEncryptAndUpload = async (e: React.FormEvent) => {
     e.preventDefault();
+    setVaultError('');
+    setVaultSuccess('');
     if (!requirePaidMembership('E2EE Document Vault storage')) {
       return;
     }
-    if (!vaultFile || vaultPassphrase.length < 6) {
-      showToast('Select a file and enter a passphrase (min 6 characters).');
+    if (!vaultFile) {
+      const msg = 'Please select a file or photo from your device first.';
+      setVaultError(msg);
+      showToast(msg);
       return;
     }
+    if (vaultPassphrase.length < 6) {
+      const msg = 'Please enter a Vault Passphrase with at least 6 characters.';
+      setVaultError(msg);
+      showToast(msg);
+      return;
+    }
+    if (vaultFile.size > 15 * 1024 * 1024) {
+      const msg = 'File size exceeds 15 MB. Please choose a file under 15 MB.';
+      setVaultError(msg);
+      showToast(msg);
+      return;
+    }
+    if (isOffline && !token.startsWith('static-preview:')) {
+      const msg = 'You are currently Offline. Switch to Online in the top bar to upload encrypted documents.';
+      setVaultError(msg);
+      showToast(msg);
+      return;
+    }
+
     setEncrypting(true);
     try {
       const encrypted = await encryptDocumentFile(vaultFile, vaultPassphrase);
+      if (token.startsWith('static-preview:')) {
+        const localDoc: EncryptedDocument = {
+          id: `doc_${Math.random().toString(16).slice(2, 10)}`,
+          studentId: user.id,
+          studentName: user.name,
+          fileName: vaultFile.name,
+          docType: vaultDocType,
+          sizeBytes: vaultFile.size,
+          algorithm: 'AES-256-GCM',
+          ivBase64: encrypted.ivBase64,
+          saltBase64: encrypted.saltBase64,
+          ciphertextBase64: encrypted.ciphertextBase64,
+          sha256Fingerprint: encrypted.sha256Fingerprint,
+          processingStatus: 'Encrypted & Verified',
+          uploadedAt: new Date().toISOString(),
+        };
+        setLocalVaultDocs((prev) => [localDoc, ...prev]);
+        if (!decryptPassphrase) setDecryptPassphrase(vaultPassphrase);
+        const uploadedName = vaultFile.name;
+        setVaultFile(null);
+        const okMsg = `Encrypted ${uploadedName} locally with AES-256-GCM and stored in Vault.`;
+        setVaultSuccess(okMsg);
+        showToast(okMsg);
+        return;
+      }
+
       const res = await fetch('/api/documents', {
         method: 'POST',
         headers: authHeaders,
@@ -588,20 +660,45 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       });
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Upload failed');
+      if (data.document) {
+        setLocalVaultDocs((prev) => [data.document as EncryptedDocument, ...prev]);
+      }
       await onSyncNow();
+      if (!decryptPassphrase) setDecryptPassphrase(vaultPassphrase);
+      const uploadedName = vaultFile.name;
       setVaultFile(null);
-      showToast(`Encrypted ${vaultFile.name} locally with AES-256-GCM and uploaded ciphertext.`);
+      const okMsg = `Encrypted ${uploadedName} locally with AES-256-GCM and stored ciphertext securely.`;
+      setVaultSuccess(okMsg);
+      showToast(okMsg);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Encryption error');
+      const msg = err instanceof Error ? err.message : 'Encryption failed on this device.';
+      setVaultError(msg);
+      showToast(msg);
     } finally {
       setEncrypting(false);
     }
   };
 
-  const handleDecryptDownload = async (doc: EncryptedDocument) => {
+  const triggerMobileSafeDownload = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 15000);
+  };
+
+  const handleDecryptDownload = async (doc: EncryptedDocument, previewOnly = false) => {
+    setVaultError('');
     const pass = decryptPassphrase || vaultPassphrase;
     if (!pass) {
-      showToast('Enter your decryption passphrase in the Vault Passphrase field first.');
+      const msg = 'Enter your Vault Passphrase in the decryption box first.';
+      setVaultError(msg);
+      showToast(msg);
       return;
     }
     try {
@@ -613,16 +710,31 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       );
       const copy = new Uint8Array(bytes.byteLength);
       copy.set(bytes);
-      const blob = new Blob([copy.buffer]);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = doc.fileName;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast(`Decrypted ${doc.fileName} locally in your browser.`);
+      const mimeType = guessMimeType(doc.fileName);
+      const blob = new Blob([copy.buffer], { type: mimeType });
+
+      if (previewOnly) {
+        const previewUrl = URL.createObjectURL(blob);
+        let textContent: string | undefined;
+        if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+          textContent = new TextDecoder().decode(copy);
+        }
+        setDecryptedPreview((prev) => {
+          if (prev?.url) URL.revokeObjectURL(prev.url);
+          return { fileName: doc.fileName, url: previewUrl, mimeType, textContent };
+        });
+        setVaultSuccess(`Decrypted ${doc.fileName} locally in your browser.`);
+        return;
+      }
+
+      triggerMobileSafeDownload(blob, doc.fileName);
+      const okMsg = `Decrypted ${doc.fileName} locally in your browser.`;
+      setVaultSuccess(okMsg);
+      showToast(okMsg);
     } catch {
-      showToast('Decryption failed: verify your vault passphrase.');
+      const msg = 'Decryption failed: verify that your passphrase matches the one used to encrypt this file.';
+      setVaultError(msg);
+      showToast(msg);
     }
   };
 
@@ -856,9 +968,9 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
   ];
 
   const docCounts = {
-    verified: documents.filter((d) => d.processingStatus === 'Encrypted & Verified').length,
-    review: documents.filter((d) => d.processingStatus === 'Under Compliance Review').length,
-    approved: documents.filter((d) => d.processingStatus === 'Approved').length,
+    verified: allVaultDocuments.filter((d) => d.processingStatus === 'Encrypted & Verified').length,
+    review: allVaultDocuments.filter((d) => d.processingStatus === 'Under Compliance Review').length,
+    approved: allVaultDocuments.filter((d) => d.processingStatus === 'Approved').length,
   };
 
   return (
@@ -918,8 +1030,16 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       {/* Main Content Area */}
       <div className="flex-1 md:pl-64 flex flex-col min-h-screen pb-20 md:pb-0">
         {/* Contextual Top Bar */}
-        <header className="sticky top-0 z-30 h-14 px-4 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md flex items-center justify-between gap-4">
+        <header className="sticky top-0 z-30 h-14 px-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md flex items-center justify-between gap-2 sm:gap-4">
           <div className="flex items-center gap-2 text-sm min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open navigation menu"
+              className="md:hidden min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
             <button
               type="button"
               onClick={onBackToPublic}
@@ -1019,6 +1139,31 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
             </button>
           </div>
         </header>
+
+        {/* Mobile Full-Menu Horizontal Strip (all 8 sections immediately reachable on phone) */}
+        <div
+          aria-label="Mobile workspace sections"
+          className="md:hidden border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 flex items-center gap-1.5 overflow-x-auto"
+        >
+          {navItems.map((item) => {
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
 
         {/* Offline Banner */}
         {isOffline && (
@@ -2012,7 +2157,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                       <select
                         value={vaultDocType}
                         onChange={(e) => setVaultDocType(e.target.value as DocumentType)}
-                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm"
                       >
                         <option value="Transcript">Official Transcript</option>
                         <option value="Recommendation Letter">Letter of Recommendation</option>
@@ -2021,12 +2166,24 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Select File</label>
+                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+                        Select File / Photo (max 15 MB)
+                      </label>
                       <input
                         type="file"
-                        onChange={(e) => setVaultFile(e.target.files?.[0] || null)}
-                        className="w-full text-xs text-slate-600 dark:text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-slate-100 dark:file:bg-slate-800 file:text-xs file:font-semibold"
+                        accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.doc,.docx,application/pdf,image/*"
+                        onChange={(e) => {
+                          setVaultFile(e.target.files?.[0] || null);
+                          setVaultError('');
+                          setVaultSuccess('');
+                        }}
+                        className="w-full text-xs text-slate-600 dark:text-slate-300 file:mr-3 file:py-2 file:px-3 file:min-h-[40px] file:rounded-lg file:border-0 file:bg-slate-100 dark:file:bg-slate-800 file:text-xs file:font-semibold"
                       />
+                      {vaultFile && (
+                        <p className="mt-1 text-[11px] font-mono text-emerald-700 dark:text-emerald-400 truncate">
+                          Selected: {vaultFile.name} ({Math.max(1, Math.round(vaultFile.size / 1024))} KB)
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
@@ -2035,16 +2192,40 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                       <input
                         type="password"
                         value={vaultPassphrase}
-                        onChange={(e) => setVaultPassphrase(e.target.value)}
+                        onChange={(e) => {
+                          setVaultPassphrase(e.target.value);
+                          setVaultError('');
+                        }}
                         placeholder="Min 6 characters"
-                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm"
                       />
                     </div>
                   </div>
+
+                  {vaultError && (
+                    <div
+                      role="alert"
+                      className="flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3 text-xs text-red-700 dark:text-red-300"
+                    >
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{vaultError}</span>
+                    </div>
+                  )}
+
+                  {vaultSuccess && (
+                    <div
+                      role="status"
+                      className="flex items-start gap-2 rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 p-3 text-xs text-emerald-800 dark:text-emerald-200"
+                    >
+                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{vaultSuccess}</span>
+                    </div>
+                  )}
+
                   <button
                     type="submit"
-                    disabled={encrypting || isOffline}
-                    className="px-4 py-2.5 min-h-[44px] text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    disabled={encrypting}
+                    className="w-full sm:w-auto px-5 py-2.5 min-h-[44px] text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                   >
                     {encrypting ? 'Encrypting Locally...' : 'Encrypt & Store in Vault'}
                   </button>
@@ -2059,35 +2240,48 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                   <input
                     type="password"
                     value={decryptPassphrase}
-                    onChange={(e) => setDecryptPassphrase(e.target.value)}
+                    onChange={(e) => {
+                      setDecryptPassphrase(e.target.value);
+                      setVaultError('');
+                    }}
                     placeholder="Passphrase to decrypt"
-                    className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs"
+                    className="w-full sm:w-64 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[40px] text-xs"
                   />
                 </div>
-                {documents.length === 0 ? (
+                {allVaultDocuments.length === 0 ? (
                   <p className="text-sm text-slate-500 dark:text-slate-400">
                     No encrypted documents stored yet.
                   </p>
                 ) : (
                   <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {documents.map((doc) => (
+                    {allVaultDocuments.map((doc) => (
                       <div key={doc.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-medium text-slate-900 dark:text-white">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-slate-900 dark:text-white truncate">
                             {doc.fileName}
                           </p>
-                          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                          <p className="text-xs font-mono text-slate-500 dark:text-slate-400 break-words">
                             {doc.docType} · {doc.algorithm} · SHA-256: {doc.sha256Fingerprint} · {doc.processingStatus}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleDecryptDownload(doc)}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>Decrypt & Download</span>
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleDecryptDownload(doc, true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] text-xs font-medium rounded-lg border border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Decrypt & View</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDecryptDownload(doc, false)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download</span>
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -2474,6 +2668,87 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
         </main>
       </div>
 
+      {/* Mobile Slide-Over Navigation Drawer (mirrors all 8 desktop sidebar options) */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label="Mobile menu">
+          <button
+            type="button"
+            aria-label="Close navigation menu"
+            onClick={() => setMobileMenuOpen(false)}
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs"
+          />
+          <aside className="relative z-10 w-72 max-w-[85vw] h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col shadow-2xl">
+            <div className="h-16 px-5 flex items-center justify-between border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onBackToPublic();
+                  }}
+                  className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white"
+                >
+                  StudyGlobe
+                </button>
+                <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                  {user.subscriptionTier.toUpperCase()}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                aria-label="Close menu"
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <nav aria-label="Mobile drawer navigation" className="flex-1 p-3 space-y-1 overflow-y-auto">
+              {navItems.map((item) => {
+                const active = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 min-h-[44px] rounded-lg text-sm font-medium transition-colors ${
+                      active
+                        ? 'bg-blue-600 text-white'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {item.icon}
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="text-xs">
+                <p className="font-semibold text-slate-900 dark:text-white truncate">{user.name}</p>
+                <p className="text-slate-500 dark:text-slate-400 truncate">{user.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onLogout();
+                }}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 min-h-[44px] text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* Mobile Bottom Thumb-Zone Navigation (max 15% height, >= 44px touch targets) */}
       <nav
         aria-label="Mobile quick navigation"
@@ -2485,7 +2760,6 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
             { id: 'programs', label: 'Programs', icon: <BookOpen className="w-5 h-5" /> },
             { id: 'ai-match', label: 'AI Match', icon: <Sparkles className="w-5 h-5" /> },
             { id: 'vault', label: 'Vault', icon: <FileLock2 className="w-5 h-5" /> },
-            { id: 'chat', label: 'Advisor', icon: <MessageSquare className="w-5 h-5" /> },
           ] as { id: StudentTab; label: string; icon: React.ReactNode }[]
         ).map((item) => (
           <button
@@ -2502,6 +2776,18 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
             <span className="mt-0.5">{item.label}</span>
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => setMobileMenuOpen(true)}
+          className={`min-h-[48px] flex flex-col items-center justify-center text-[10px] font-medium ${
+            ['alumni', 'applications', 'chat', 'billing'].includes(activeTab)
+              ? 'text-blue-600 dark:text-blue-400'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <Menu className="w-5 h-5" />
+          <span className="mt-0.5">All Tabs</span>
+        </button>
       </nav>
 
       {/* Application Fee Payment Checkout Modal */}
@@ -2850,6 +3136,91 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Decrypted Document Preview Modal (Mobile-Safe Viewer & Download) */}
+      {decryptedPreview && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/70 backdrop-blur-sm p-0 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="decrypted-preview-title"
+        >
+          <div className="w-full max-w-2xl max-h-[90dvh] flex flex-col rounded-t-2xl sm:rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2
+                  id="decrypted-preview-title"
+                  className="text-sm font-bold text-slate-900 dark:text-white truncate"
+                >
+                  Decrypted File · {decryptedPreview.fileName}
+                </h2>
+                <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                  Decrypted locally via AES-256-GCM ({decryptedPreview.mimeType})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  URL.revokeObjectURL(decryptedPreview.url);
+                  setDecryptedPreview(null);
+                }}
+                aria-label="Close decrypted preview"
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4 sm:p-6 bg-slate-50 dark:bg-slate-950/60">
+              {decryptedPreview.mimeType.startsWith('image/') ? (
+                <img
+                  src={decryptedPreview.url}
+                  alt={decryptedPreview.fileName}
+                  className="max-w-full max-h-[60dvh] mx-auto rounded-lg border border-slate-200 dark:border-slate-800 object-contain"
+                />
+              ) : decryptedPreview.textContent !== undefined ? (
+                <pre className="text-xs font-mono whitespace-pre-wrap break-words bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 text-slate-800 dark:text-slate-200">
+                  {decryptedPreview.textContent}
+                </pre>
+              ) : decryptedPreview.mimeType === 'application/pdf' ? (
+                <iframe
+                  title={decryptedPreview.fileName}
+                  src={decryptedPreview.url}
+                  className="w-full h-[55dvh] rounded-lg border border-slate-200 dark:border-slate-800 bg-white"
+                />
+              ) : (
+                <div className="text-center py-8 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                  <p className="font-semibold text-sm text-slate-900 dark:text-white">
+                    File decrypted successfully and ready to save.
+                  </p>
+                  <p>Tap Save File below to download {decryptedPreview.fileName} to your device.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="px-4 py-3 sm:px-6 border-t border-slate-200 dark:border-slate-800 flex gap-3">
+              <a
+                href={decryptedPreview.url}
+                download={decryptedPreview.fileName}
+                className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 min-h-[44px] text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+              >
+                <Download className="w-4 h-4" />
+                <span>Save File</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => {
+                  URL.revokeObjectURL(decryptedPreview.url);
+                  setDecryptedPreview(null);
+                }}
+                className="px-4 py-2.5 min-h-[44px] text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

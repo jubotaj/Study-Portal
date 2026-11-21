@@ -170,7 +170,7 @@ function buildPerformanceReport(): SystemPerformanceReport {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   // Latency measurement middleware
   app.use((req, res, next) => {
