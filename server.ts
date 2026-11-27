@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createServer as createViteServer } from 'vite';
@@ -18,6 +19,106 @@ import type { ApplicationStatus, LanguageCode, SubscriptionTier, SystemPerforman
 
 const PORT = Number(process.env.PORT) || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+function getFirebaseProjectId(): string | null {
+  try {
+    const raw = fs.readFileSync(path.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.projectId === 'string' ? parsed.projectId : null;
+  } catch {
+    return null;
+  }
+}
+
+let cachedFirebaseCerts: { certs: Record<string, string>; expiresAt: number } | null = null;
+
+async function fetchFirebasePublicCerts(forceRefresh = false): Promise<Record<string, string>> {
+  if (!forceRefresh && cachedFirebaseCerts && Date.now() < cachedFirebaseCerts.expiresAt) {
+    return cachedFirebaseCerts.certs;
+  }
+  const resp = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com',
+  );
+  if (!resp.ok) {
+    throw new Error('Unable to fetch Firebase public certificates.');
+  }
+  const certs = (await resp.json()) as Record<string, string>;
+  const cacheControl = resp.headers.get('cache-control') || '';
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+  const ttlMs = (maxAgeMatch ? Number(maxAgeMatch[1]) : 3600) * 1000;
+  cachedFirebaseCerts = { certs, expiresAt: Date.now() + ttlMs };
+  return certs;
+}
+
+async function verifyFirebaseIdToken(idToken: string): Promise<{
+  uid: string;
+  email: string;
+  name: string;
+  emailVerified: boolean;
+}> {
+  const projectId = getFirebaseProjectId();
+  if (!projectId) {
+    throw new Error('Firebase is not configured on the server.');
+  }
+  const parts = idToken.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed Firebase ID token.');
+  }
+  const [headerB64, payloadB64, sigB64] = parts;
+  const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf-8')) as {
+    alg?: string;
+    kid?: string;
+  };
+  const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as {
+    aud?: string;
+    iss?: string;
+    sub?: string;
+    exp?: number;
+    email?: string;
+    email_verified?: boolean;
+    name?: string;
+  };
+
+  if (header.alg !== 'RS256' || !header.kid) {
+    throw new Error('Unsupported Firebase token algorithm.');
+  }
+
+  let certs = await fetchFirebasePublicCerts(false);
+  let cert = certs[header.kid];
+  if (!cert) {
+    certs = await fetchFirebasePublicCerts(true);
+    cert = certs[header.kid];
+  }
+  if (!cert) {
+    throw new Error('Firebase signing certificate not found.');
+  }
+
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${headerB64}.${payloadB64}`);
+  verifier.end();
+  const validSig = verifier.verify(cert, Buffer.from(sigB64, 'base64url'));
+  if (!validSig) {
+    throw new Error('Invalid Firebase ID token signature.');
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (payload.aud !== projectId || payload.iss !== `https://securetoken.google.com/${projectId}`) {
+    throw new Error('Firebase ID token project mismatch.');
+  }
+  if (!payload.sub || !payload.exp || payload.exp <= nowSec) {
+    throw new Error('Firebase ID token expired.');
+  }
+  if (!payload.email || payload.email_verified !== true) {
+    throw new Error('Verified Google email is required.');
+  }
+
+  return {
+    uid: payload.sub,
+    email: payload.email.trim().toLowerCase(),
+    name: (payload.name || payload.email.split('@')[0] || 'StudyGlobe Student').trim(),
+    emailVerified: true,
+  };
+}
 
 // In-memory MFA & registration email verification challenge stores (short-lived) and latency tracker
 const pendingMfaChallenges = new Map<string, { userId: string; code: string; expiresAt: number }>();
@@ -457,6 +558,76 @@ async function startServer() {
     });
     const token = signToken({ userId: user.id, role: user.role, exp: Date.now() + 7 * 86400_000 });
     res.json({ token, user: toPublicUser(user) });
+  });
+
+  app.post('/api/auth/firebase', async (req, res) => {
+    try {
+      const { idToken } = req.body ?? {};
+      if (!idToken || typeof idToken !== 'string') {
+        res.status(400).json({ error: 'Firebase idToken is required.' });
+        return;
+      }
+      const verified = await verifyFirebaseIdToken(idToken);
+      const data = store.getData();
+      let user = data.users.find((u) => u.email.toLowerCase() === verified.email);
+
+      if (user) {
+        if (user.blocked) {
+          res.status(403).json({ error: 'This account is currently blocked by portal administration.' });
+          return;
+        }
+        user.emailVerified = true;
+        user.lastSyncedAt = new Date().toISOString();
+        store.save();
+      } else {
+        const now = new Date().toISOString();
+        user = {
+          id: `usr_fb_${verified.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || crypto.randomBytes(4).toString('hex')}`,
+          name: verified.name,
+          email: verified.email,
+          emailVerified: true,
+          passwordHash: hashPassword(crypto.randomBytes(24).toString('hex')),
+          role: 'student',
+          blocked: false,
+          subscriptionTier: 'free',
+          mfaEnabled: false,
+          preferredLanguage: 'en',
+          academicProfile: {
+            gpa: 3.7,
+            degreeTarget: 'Master',
+            field: 'Computer Science & AI',
+            targetCountries: ['Switzerland', 'Germany'],
+            financialNeed: 'moderate',
+            englishScore: 'IELTS 7.5',
+            workExperienceMonths: 12,
+          },
+          lastSyncedAt: now,
+          createdAt: now,
+        };
+        data.users.push(user);
+        store.addAudit({
+          actorEmail: user.email,
+          actorRole: user.role,
+          action: 'FIREBASE_GOOGLE_REGISTRATION',
+          regulation: 'GDPR',
+          details: `Verified student account created via Firebase Google Sign-In.`,
+        });
+        store.addNotification({
+          userId: user.id,
+          channel: 'email',
+          title: 'Welcome to StudyGlobe (Google Verified)',
+          body: 'Your Google account is linked with Firebase & StudyGlobe. Upgrade anytime for AI matching and encrypted vault features.',
+        });
+        store.save();
+      }
+
+      const token = signToken({ userId: user.id, role: user.role, exp: Date.now() + 7 * 86400_000 });
+      res.json({ token, user: toPublicUser(user) });
+    } catch (err) {
+      res.status(401).json({
+        error: err instanceof Error ? err.message : 'Firebase authentication verification failed.',
+      });
+    }
   });
 
   app.get('/api/auth/me', authenticate, (req: AuthedRequest, res) => {

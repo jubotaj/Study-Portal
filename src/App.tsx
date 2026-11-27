@@ -3,10 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import { AdminWorkspace } from './components/AdminWorkspace.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { PublicPortal } from './components/PublicPortal.tsx';
 import { StudentWorkspace } from './components/StudentWorkspace.tsx';
+import { auth, signOutFromFirebase } from './firebase.ts';
+import {
+  ensureFirebaseUserWorkspaceDocs,
+  subscribeToFirebaseUserWorkspace,
+  syncUserProfileToFirestore,
+} from './services/firestoreSync.ts';
 import type {
   AlumniMentor,
   Application,
@@ -46,10 +53,12 @@ const OFFLINE_QUEUE_STORAGE_KEY = 'studyglobe_offline_queue_v1';
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<PublicUser | null>(null);
+  const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
+  const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
   const staticUserRef = useRef<PublicUser | null>(null);
   const lastSyncedTokenRef = useRef<string | null>(null);
   const [viewMode, setViewMode] = useState<'public' | 'workspace'>('public');
-  const [studentInitialTab, setStudentInitialTab] = useState<'overview' | 'billing'>('overview');
+  const [studentInitialTab, setStudentInitialTab] = useState<'overview' | 'billing' | null>(null);
   const [studentPreselectTier, setStudentPreselectTier] = useState<SubscriptionTier | null>(null);
   const pendingPlanRef = useRef<SubscriptionTier | null>(null);
 
@@ -171,6 +180,18 @@ export default function App() {
         return;
       }
 
+      if (tk.startsWith('firebase:')) {
+        if (auth.currentUser?.emailVerified) {
+          try {
+            const fbUser = await ensureFirebaseUserWorkspaceDocs(auth.currentUser, user);
+            setUser((prev) => prev ?? fbUser);
+          } catch {
+            // ErrorBoundary or console handles structured Firestore error
+          }
+        }
+        return;
+      }
+
       // Replay queued offline actions if online
       const queued = getOfflineQueue();
       if (!isOffline && queued.length > 0) {
@@ -246,6 +267,26 @@ export default function App() {
   );
 
   useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (fbUser) => {
+      setFirebaseUid(fbUser && fbUser.emailVerified ? fbUser.uid : null);
+      setFirebaseAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseAuthReady || !firebaseUid || !user) return;
+    const unsub = subscribeToFirebaseUserWorkspace(firebaseUid, {
+      onApplications: (items) => setApplications(items),
+      onBookings: (items) => setBookings(items),
+      onDocuments: (items) => setDocuments(items),
+      onMessages: (items) => setMessages(items),
+      onNotifications: (items) => setNotifications(items),
+    });
+    return () => unsub();
+  }, [firebaseAuthReady, firebaseUid, user?.id]);
+
+  useEffect(() => {
     fetchPublicOverview();
   }, [fetchPublicOverview]);
 
@@ -290,6 +331,11 @@ export default function App() {
     }
   };
 
+  const handleConsumeInitialIntent = useCallback(() => {
+    setStudentInitialTab(null);
+    setStudentPreselectTier(null);
+  }, []);
+
   const handleLogout = () => {
     lastSyncedTokenRef.current = null;
     staticUserRef.current = null;
@@ -301,14 +347,18 @@ export default function App() {
     setDocuments([]);
     setMessages([]);
     setNotifications([]);
-    setStudentInitialTab('overview');
+    setStudentInitialTab(null);
     setStudentPreselectTier(null);
     setViewMode('public');
+    signOutFromFirebase().catch(() => undefined);
   };
 
   const handleChangeLanguage = async (nextLang: LanguageCode) => {
     setLanguage(nextLang);
-    if (token && !token.startsWith('static-preview:') && !isOffline) {
+    if (firebaseUid) {
+      syncUserProfileToFirestore(firebaseUid, { preferredLanguage: nextLang }).catch(() => undefined);
+    }
+    if (token && !token.startsWith('static-preview:') && !token.startsWith('firebase:') && !isOffline) {
       try {
         await fetch('/api/user/profile', {
           method: 'PATCH',
@@ -356,10 +406,7 @@ export default function App() {
             offlineQueue={offlineQueue}
             initialTab={studentInitialTab}
             initialCheckoutTier={studentPreselectTier}
-            onConsumeInitialIntent={() => {
-              setStudentInitialTab('overview');
-              setStudentPreselectTier(null);
-            }}
+            onConsumeInitialIntent={handleConsumeInitialIntent}
             onRefreshQueue={() => setOfflineQueue(getOfflineQueue())}
             onToggleOfflineSim={() => setOfflineSim((v) => !v)}
             onSyncNow={() => syncWorkspace()}
@@ -397,7 +444,7 @@ export default function App() {
             setAuthModalOpen(true);
           }}
           onEnterWorkspace={(targetTab, preselectTier) => {
-            setStudentInitialTab(targetTab ?? 'overview');
+            setStudentInitialTab(targetTab ?? null);
             setStudentPreselectTier(preselectTier ?? null);
             setViewMode('workspace');
           }}

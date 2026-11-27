@@ -373,26 +373,27 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
 
       {/* Main Viewport */}
       <div className="flex-1 md:pl-64 flex flex-col min-h-screen pb-20 md:pb-0">
-        <header className="sticky top-0 z-30 h-14 px-4 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 text-sm min-w-0">
+        <header className="sticky top-0 z-30 h-14 px-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 text-sm min-w-0 flex-1">
             <button
               type="button"
               onClick={onBackToPublic}
-              className="md:hidden font-display font-bold text-slate-900 dark:text-white truncate shrink-0"
+              className="md:hidden font-display font-bold text-slate-900 dark:text-white truncate"
             >
               StudyGlobe Admin
             </button>
             <span className="hidden md:inline text-slate-400">Administrator Console</span>
             <span className="hidden md:inline text-slate-400">/</span>
-            <span className="font-semibold text-slate-900 dark:text-white truncate">
+            <span className="hidden sm:inline font-semibold text-slate-900 dark:text-white truncate">
               {navItems.find((n) => n.id === activeTab)?.label}
             </span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={loadAdminOverview}
               disabled={loadingAdmin}
+              aria-label="Refresh admin data"
               className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingAdmin ? 'animate-spin' : ''}`} />
@@ -410,10 +411,11 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
               type="button"
               onClick={onLogout}
               aria-label="Sign out"
-              className="md:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title="Sign Out"
+              className="md:hidden inline-flex items-center justify-center gap-1.5 min-h-[36px] min-w-[36px] px-2 sm:px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Sign Out</span>
+              <LogOut className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </header>

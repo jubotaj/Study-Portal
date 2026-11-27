@@ -49,7 +49,7 @@
         "englishScore": "TOEFL 108",
         "workExperienceMonths": 14
       },
-      "lastSyncedAt": "2026-11-21T04:11:25.273Z",
+      "lastSyncedAt": "2026-11-27T05:19:08.060Z",
       "createdAt": "2026-11-20T06:21:43.487Z",
       "journeyChecklists": {
         "prog_eth_cs": [
@@ -1488,6 +1488,15 @@
     }
   ],
   "notifications": [
+    {
+      "id": "ntf_651e0c3b78",
+      "read": false,
+      "createdAt": "2026-11-27T05:04:11.565Z",
+      "userId": "usr_student_pro",
+      "channel": "email",
+      "title": "StudyGlobe Security Code (MFA)",
+      "body": "Your 6-digit verification code is 957989. Valid for 5 minutes."
+    },
     {
       "id": "ntf_652f634867",
       "read": false,

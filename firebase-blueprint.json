@@ -1,0 +1,540 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Core non-PII student or admin workspace profile stored under /users/{userId}.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "admin"]
+        },
+        "blocked": {
+          "type": "boolean"
+        },
+        "subscriptionTier": {
+          "type": "string",
+          "enum": ["free", "pro", "fellowship"]
+        },
+        "mfaEnabled": {
+          "type": "boolean"
+        },
+        "preferredLanguage": {
+          "type": "string",
+          "enum": ["en", "es", "fr", "de", "ja", "bn"]
+        },
+        "gpa": {
+          "type": "number"
+        },
+        "degreeTarget": {
+          "type": "string",
+          "enum": ["Bachelor", "Master", "PhD"]
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "targetCountries": {
+          "type": "array",
+          "description": "Bounded list of up to 15 target study countries."
+        },
+        "financialNeed": {
+          "type": "string",
+          "enum": ["high", "moderate", "self-funded"]
+        },
+        "englishScore": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "workExperienceMonths": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "role",
+        "blocked",
+        "subscriptionTier",
+        "mfaEnabled",
+        "preferredLanguage",
+        "gpa",
+        "degreeTarget",
+        "field",
+        "targetCountries",
+        "financialNeed",
+        "englishScore",
+        "workExperienceMonths",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record (email, phone) stored under /users/{userId}/private/info.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "phoneCountry": {
+          "type": "string",
+          "maxLength": 10
+        },
+        "phoneNumber": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "emailVerified": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "emailVerified", "createdAt", "updatedAt"]
+    },
+    "UserApplication": {
+      "title": "UserApplication",
+      "description": "Student university admission application record.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "programId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "university": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "programTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Draft", "Submitted", "Under Review", "Interview", "Accepted", "Waitlisted"]
+        },
+        "feePaid": {
+          "type": "boolean"
+        },
+        "feeAmountUsd": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "submittedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "programId",
+        "university",
+        "programTitle",
+        "status",
+        "feePaid",
+        "feeAmountUsd",
+        "notes",
+        "submittedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MentorshipBooking": {
+      "title": "MentorshipBooking",
+      "description": "1-on-1 alumni mentorship session reservation.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "mentorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "mentorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "university": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "slot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Confirmed", "Completed"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "mentorId",
+        "mentorName",
+        "university",
+        "slot",
+        "topic",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedDocumentRecord": {
+      "title": "EncryptedDocumentRecord",
+      "description": "Client-side AES-256-GCM encrypted document metadata and ciphertext.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "docType": {
+          "type": "string",
+          "enum": ["Transcript", "Recommendation Letter", "Statement of Purpose", "Passport / ID"]
+        },
+        "sizeBytes": {
+          "type": "integer"
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": ["AES-256-GCM"]
+        },
+        "ivBase64": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "saltBase64": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ciphertextBase64": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 750000
+        },
+        "sha256Fingerprint": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "processingStatus": {
+          "type": "string",
+          "enum": ["Encrypted & Verified", "Under Compliance Review", "Approved"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "fileName",
+        "docType",
+        "sizeBytes",
+        "algorithm",
+        "ivBase64",
+        "saltBase64",
+        "ciphertextBase64",
+        "sha256Fingerprint",
+        "processingStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SupportMessageRecord": {
+      "title": "SupportMessageRecord",
+      "description": "Direct student-to-moderator support message.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["student", "admin", "ai-bot"]
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "replied": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "senderRole",
+        "senderName",
+        "content",
+        "replied",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PortalNotificationRecord": {
+      "title": "PortalNotificationRecord",
+      "description": "Per-user portal notification.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "channel": {
+          "type": "string",
+          "enum": ["email", "push"]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "channel", "title", "body", "read", "createdAt", "updatedAt"]
+    },
+    "UserFeedbackRecord": {
+      "title": "UserFeedbackRecord",
+      "description": "Student portal feedback entry.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Open", "Implemented by AI", "Reviewed"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "userName", "category", "message", "status", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Server-managed administrator role grant document.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Privileged admin UID directory."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Core student workspace profile and preferences."
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Owner-only PII record (email and phone)."
+    },
+    "/users/{userId}/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/UserApplication" },
+      "description": "Student university applications."
+    },
+    "/users/{userId}/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/MentorshipBooking" },
+      "description": "Student 1-on-1 mentorship bookings."
+    },
+    "/users/{userId}/documents/{documentId}": {
+      "schema": { "$ref": "#/entities/EncryptedDocumentRecord" },
+      "description": "Student AES-256-GCM encrypted vault documents."
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/SupportMessageRecord" },
+      "description": "Student moderator support messages."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/PortalNotificationRecord" },
+      "description": "Student email/push notification history."
+    },
+    "/users/{userId}/feedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/UserFeedbackRecord" },
+      "description": "Student UX and feature feedback entries."
+    }
+  }
+}

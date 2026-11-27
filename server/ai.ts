@@ -10,7 +10,7 @@ import type {
 } from '../src/types.ts';
 
 function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw new Error('GEMINI_API_KEY is not configured in Settings > Secrets.');
   }
@@ -67,6 +67,12 @@ export function formatGeminiError(err: unknown): { status: number; message: stri
     return {
       status: 422,
       message: 'Requested Gemini model is unavailable for this key.',
+    };
+  }
+  if (raw.includes('GEMINI_API_KEY is not configured')) {
+    return {
+      status: 503,
+      message: raw,
     };
   }
   return { status: code >= 400 && code < 600 && code !== 403 ? code : 500, message: apiMessage };

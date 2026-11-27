@@ -3,6 +3,7 @@ import { ArrowRight, Calendar, Globe, Lock, LogOut, Moon, Search, Shield, Sun } 
 import type { AlumniMentor, LanguageCode, Program, PublicUser, Scholarship, SubscriptionTier } from '../types.ts';
 import { LANGUAGE_LABELS, t } from '../utils/i18n.ts';
 import { getUniversityGuide } from '../utils/universityGuide.ts';
+import { HistoricalTrendsSection } from './HistoricalTrendsSection.tsx';
 import { UniversityProfileModal } from './UniversityProfileModal.tsx';
 
 interface PublicPortalProps {
@@ -268,6 +269,17 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
             </div>
           </div>
         </section>
+
+        {/* Historical Performance Metrics & Student Outcomes Trends */}
+        <HistoricalTrendsSection
+          currentUser={currentUser}
+          onOpenAuth={(mode) => onOpenAuth(mode)}
+          onEnterWorkspace={() => onEnterWorkspace()}
+          onFilterByCountry={(country) => {
+            setCountryFilter(country);
+            setDegreeFilter('All');
+          }}
+        />
 
         {/* Free Overview Banner (Clearly distinguishes Free vs Subscription) */}
         <section className="max-w-7xl mx-auto px-4 sm:px-6 pb-8">

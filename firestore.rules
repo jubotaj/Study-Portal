@@ -1,0 +1,408 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == '2023-2-60-048@std.ewubd.edu'
+      );
+    }
+
+    function parentUserExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId)) ||
+        existsAfter(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'name', 'role', 'blocked', 'subscriptionTier', 'mfaEnabled',
+          'preferredLanguage', 'gpa', 'degreeTarget', 'field', 'targetCountries',
+          'financialNeed', 'englishScore', 'workExperienceMonths', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'name', 'role', 'blocked', 'subscriptionTier', 'mfaEnabled',
+          'preferredLanguage', 'gpa', 'degreeTarget', 'field', 'targetCountries',
+          'financialNeed', 'englishScore', 'workExperienceMonths', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid is string && isValidId(data.uid) && data.uid == userId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.role in ['student', 'admin'] &&
+        data.blocked is bool &&
+        data.subscriptionTier in ['free', 'pro', 'fellowship'] &&
+        data.mfaEnabled is bool &&
+        data.preferredLanguage in ['en', 'es', 'fr', 'de', 'ja', 'bn'] &&
+        (data.gpa is float || data.gpa is int) && data.gpa >= 0 && data.gpa <= 4.0 &&
+        data.degreeTarget in ['Bachelor', 'Master', 'PhD'] &&
+        data.field is string && data.field.size() >= 1 && data.field.size() <= 120 &&
+        data.targetCountries is list && data.targetCountries.size() <= 15 &&
+        (data.targetCountries.size() == 0 || (data.targetCountries[0] is string && data.targetCountries[0].size() <= 60)) &&
+        data.financialNeed in ['high', 'moderate', 'self-funded'] &&
+        data.englishScore is string && data.englishScore.size() <= 60 &&
+        data.workExperienceMonths is int && data.workExperienceMonths >= 0 && data.workExperienceMonths <= 600 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'emailVerified', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phoneCountry', 'phoneNumber', 'emailVerified', 'createdAt', 'updatedAt']) &&
+        data.uid is string && isValidId(data.uid) && data.uid == userId &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 180 &&
+        (!('phoneCountry' in data) || (data.phoneCountry is string && data.phoneCountry.size() <= 10)) &&
+        (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 40)) &&
+        data.emailVerified is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidApplication(data, userId) {
+      return data.keys().hasAll([
+          'studentId', 'studentName', 'programId', 'university', 'programTitle',
+          'status', 'feePaid', 'feeAmountUsd', 'notes', 'submittedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'studentId', 'studentName', 'programId', 'university', 'programTitle',
+          'status', 'feePaid', 'feeAmountUsd', 'notes', 'submittedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.studentId is string && isValidId(data.studentId) && data.studentId == userId &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120 &&
+        data.programId is string && isValidId(data.programId) &&
+        data.university is string && data.university.size() >= 1 && data.university.size() <= 160 &&
+        data.programTitle is string && data.programTitle.size() >= 1 && data.programTitle.size() <= 160 &&
+        data.status in ['Draft', 'Submitted', 'Under Review', 'Interview', 'Accepted', 'Waitlisted'] &&
+        data.feePaid is bool &&
+        (data.feeAmountUsd is int || data.feeAmountUsd is float) && data.feeAmountUsd >= 0 && data.feeAmountUsd <= 5000 &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        data.submittedAt is string && data.submittedAt.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBooking(data, userId) {
+      return data.keys().hasAll([
+          'studentId', 'studentName', 'mentorId', 'mentorName', 'university',
+          'slot', 'topic', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'studentId', 'studentName', 'mentorId', 'mentorName', 'university',
+          'slot', 'topic', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.studentId is string && isValidId(data.studentId) && data.studentId == userId &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120 &&
+        data.mentorId is string && isValidId(data.mentorId) &&
+        data.mentorName is string && data.mentorName.size() >= 1 && data.mentorName.size() <= 120 &&
+        data.university is string && data.university.size() >= 1 && data.university.size() <= 160 &&
+        data.slot is string && data.slot.size() >= 1 && data.slot.size() <= 80 &&
+        data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 400 &&
+        data.status in ['Confirmed', 'Completed'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDocument(data, userId) {
+      return data.keys().hasAll([
+          'studentId', 'studentName', 'fileName', 'docType', 'sizeBytes', 'algorithm',
+          'ivBase64', 'saltBase64', 'ciphertextBase64', 'sha256Fingerprint',
+          'processingStatus', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'studentId', 'studentName', 'fileName', 'docType', 'sizeBytes', 'algorithm',
+          'ivBase64', 'saltBase64', 'ciphertextBase64', 'sha256Fingerprint',
+          'processingStatus', 'createdAt', 'updatedAt'
+        ]) &&
+        data.studentId is string && isValidId(data.studentId) && data.studentId == userId &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120 &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 180 &&
+        data.docType in ['Transcript', 'Recommendation Letter', 'Statement of Purpose', 'Passport / ID'] &&
+        data.sizeBytes is int && data.sizeBytes >= 0 && data.sizeBytes <= 15728640 &&
+        data.algorithm == 'AES-256-GCM' &&
+        data.ivBase64 is string && data.ivBase64.size() >= 1 && data.ivBase64.size() <= 128 &&
+        data.saltBase64 is string && data.saltBase64.size() >= 1 && data.saltBase64.size() <= 128 &&
+        data.ciphertextBase64 is string && data.ciphertextBase64.size() >= 1 && data.ciphertextBase64.size() <= 750000 &&
+        data.sha256Fingerprint is string && data.sha256Fingerprint.size() <= 128 &&
+        data.processingStatus in ['Encrypted & Verified', 'Under Compliance Review', 'Approved'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMessage(data, userId) {
+      return data.keys().hasAll([
+          'studentId', 'studentName', 'senderRole', 'senderName',
+          'content', 'replied', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'studentId', 'studentName', 'senderRole', 'senderName',
+          'content', 'replied', 'createdAt', 'updatedAt'
+        ]) &&
+        data.studentId is string && isValidId(data.studentId) && data.studentId == userId &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120 &&
+        data.senderRole in ['student', 'admin', 'ai-bot'] &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120 &&
+        data.content is string && data.content.size() >= 1 && data.content.size() <= 2000 &&
+        data.replied is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data, userId) {
+      return data.keys().hasAll(['userId', 'channel', 'title', 'body', 'read', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'channel', 'title', 'body', 'read', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == userId &&
+        data.channel in ['email', 'push'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 180 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 600 &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFeedback(data, userId) {
+      return data.keys().hasAll(['userId', 'userName', 'category', 'message', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'userName', 'category', 'message', 'status', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == userId &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 120 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 1500 &&
+        data.status in ['Open', 'Implemented by AI', 'Reviewed'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isVerifiedAdminEmail() {
+      return isVerifiedUser() && request.auth.token.email == '2023-2-60-048@std.ewubd.edu';
+    }
+
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isVerifiedAdminEmail();
+      allow create, update, delete: if false;
+    }
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isVerifiedAdminEmail());
+      allow create: if isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().role == 'student' &&
+        incoming().blocked == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            isOwner(userId) &&
+            existing().blocked == false &&
+            incoming().role == existing().role &&
+            incoming().blocked == existing().blocked &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'subscriptionTier', 'mfaEnabled', 'preferredLanguage',
+              'gpa', 'degreeTarget', 'field', 'targetCountries',
+              'financialNeed', 'englishScore', 'workExperienceMonths', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if false;
+
+      match /private/info {
+        allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow list: if false;
+        allow create: if isValidId(userId) &&
+          isOwner(userId) &&
+          isValidPrivateInfo(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) &&
+          isValidPrivateInfo(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'email', 'phoneCountry', 'phoneNumber', 'emailVerified', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if false;
+      }
+
+      match /applications/{applicationId} {
+        allow get: if isValidId(userId) && isValidId(applicationId) && (isOwner(userId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.studentId == request.auth.uid || isVerifiedAdminEmail());
+        allow create: if isValidId(userId) && isValidId(applicationId) &&
+          isOwner(userId) &&
+          isValidApplication(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().status in ['Draft', 'Submitted'] &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(applicationId) &&
+          isValidApplication(incoming(), userId) &&
+          incoming().studentId == existing().studentId &&
+          incoming().programId == existing().programId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isOwner(userId) &&
+              existing().status != 'Accepted' &&
+              incoming().status in ['Draft', 'Submitted'] &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'feePaid', 'notes', 'submittedAt', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(applicationId) && (
+          isAdmin() || (isOwner(userId) && existing().status == 'Draft')
+        );
+      }
+
+      match /bookings/{bookingId} {
+        allow get: if isValidId(userId) && isValidId(bookingId) && (isOwner(userId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.studentId == request.auth.uid || isVerifiedAdminEmail());
+        allow create: if isValidId(userId) && isValidId(bookingId) &&
+          isOwner(userId) &&
+          isValidBooking(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().status == 'Confirmed' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(bookingId) &&
+          isValidBooking(incoming(), userId) &&
+          incoming().studentId == existing().studentId &&
+          incoming().mentorId == existing().mentorId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isOwner(userId) &&
+              existing().status != 'Completed' &&
+              incoming().status == existing().status &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['topic', 'slot', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(bookingId) && isAdmin();
+      }
+
+      match /documents/{documentId} {
+        allow get: if isValidId(userId) && isValidId(documentId) && (isOwner(userId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.studentId == request.auth.uid || isVerifiedAdminEmail());
+        allow create: if isValidId(userId) && isValidId(documentId) &&
+          isOwner(userId) &&
+          isValidDocument(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().processingStatus == 'Encrypted & Verified' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(documentId) &&
+          isValidDocument(incoming(), userId) &&
+          incoming().studentId == existing().studentId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAdmin();
+        allow delete: if isValidId(userId) && isValidId(documentId) && (isOwner(userId) || isAdmin());
+      }
+
+      match /messages/{messageId} {
+        allow get: if isValidId(userId) && isValidId(messageId) && (isOwner(userId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.studentId == request.auth.uid || isVerifiedAdminEmail());
+        allow create: if isValidId(userId) && isValidId(messageId) &&
+          isValidMessage(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().senderRole == 'student' &&
+              incoming().replied == false
+            )
+          );
+        allow update: if isValidId(userId) && isValidId(messageId) &&
+          isValidMessage(incoming(), userId) &&
+          incoming().studentId == existing().studentId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAdmin();
+        allow delete: if isValidId(userId) && isValidId(messageId) && isAdmin();
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isVerifiedAdminEmail());
+        allow create: if isValidId(userId) && isValidId(notificationId) &&
+          isOwner(userId) &&
+          isValidNotification(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(notificationId) &&
+          isValidNotification(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isAdmin());
+      }
+
+      match /feedback/{feedbackId} {
+        allow get: if isValidId(userId) && isValidId(feedbackId) && (isOwner(userId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isVerifiedAdminEmail());
+        allow create: if isValidId(userId) && isValidId(feedbackId) &&
+          isOwner(userId) &&
+          isValidFeedback(incoming(), userId) &&
+          parentUserExists(userId) &&
+          incoming().status == 'Open' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(feedbackId) &&
+          isValidFeedback(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAdmin();
+        allow delete: if isValidId(userId) && isValidId(feedbackId) && isAdmin();
+      }
+    }
+  }
+}

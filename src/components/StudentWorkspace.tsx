@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   BookOpen,
@@ -52,6 +52,16 @@ import { LANGUAGE_LABELS, t } from '../utils/i18n.ts';
 import { enqueueOfflineAction, type OfflineQueuedAction } from '../utils/offline.ts';
 import { evaluateUniversityChance, getUniversityGuide } from '../utils/universityGuide.ts';
 import { UniversityProfileModal } from './UniversityProfileModal.tsx';
+import { auth } from '../firebase.ts';
+import {
+  markNotificationsReadInFirestore,
+  saveApplicationToFirestore,
+  saveBookingToFirestore,
+  saveDocumentToFirestore,
+  saveFeedbackToFirestore,
+  saveMessageToFirestore,
+  syncUserProfileToFirestore,
+} from '../services/firestoreSync.ts';
 
 type StudentTab =
   | 'overview'
@@ -77,7 +87,7 @@ interface StudentWorkspaceProps {
   customizations: SiteCustomization[];
   isOffline: boolean;
   offlineQueue: OfflineQueuedAction[];
-  initialTab?: 'overview' | 'billing';
+  initialTab?: 'overview' | 'billing' | null;
   initialCheckoutTier?: SubscriptionTier | null;
   onConsumeInitialIntent?: () => void;
   onRefreshQueue?: () => void;
@@ -132,6 +142,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
     user.role === 'admin' || user.subscriptionTier === 'pro' || user.subscriptionTier === 'fellowship';
 
   const [activeTab, setActiveTab] = useState<StudentTab>(initialTab || 'overview');
+  const lastConsumedIntentRef = useRef<string>('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toast, setToast] = useState<string>('');
   const [syncing, setSyncing] = useState(false);
@@ -243,14 +254,19 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
   } | null>(null);
 
   useEffect(() => {
-    if (initialTab || initialCheckoutTier) {
-      if (initialTab) setActiveTab(initialTab);
-      if (initialCheckoutTier && initialCheckoutTier !== user.subscriptionTier) {
-        setSelectedTier(initialCheckoutTier);
-        setBillingError('');
-      }
-      onConsumeInitialIntent?.();
+    if (!initialTab && !initialCheckoutTier) {
+      lastConsumedIntentRef.current = '';
+      return;
     }
+    const intentKey = `${initialTab ?? ''}:${initialCheckoutTier ?? ''}`;
+    if (lastConsumedIntentRef.current === intentKey) return;
+    lastConsumedIntentRef.current = intentKey;
+    if (initialTab) setActiveTab(initialTab);
+    if (initialCheckoutTier && initialCheckoutTier !== user.subscriptionTier) {
+      setSelectedTier(initialCheckoutTier);
+      setBillingError('');
+    }
+    onConsumeInitialIntent?.();
   }, [initialTab, initialCheckoutTier, user.subscriptionTier, onConsumeInitialIntent]);
 
   // Sync local state when switching accounts in the same session
@@ -376,6 +392,30 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
         setCheckoutProgram(null);
         return;
       }
+      if (token.startsWith('firebase:') && auth.currentUser?.emailVerified) {
+        const now = new Date().toISOString();
+        const feeAmount =
+          user.subscriptionTier === 'fellowship' ? 0 : checkoutProgram.applicationFeeUsd;
+        await saveApplicationToFirestore(auth.currentUser.uid, {
+          id: `app_${Date.now()}`,
+          studentId: auth.currentUser.uid,
+          studentName: user.name,
+          programId: checkoutProgram.id,
+          university: checkoutProgram.university,
+          programTitle: checkoutProgram.title,
+          status: 'Submitted',
+          feePaid: true,
+          feeAmountUsd: feeAmount,
+          submittedAt: now,
+          updatedAt: now,
+          notes: payload.notes,
+        });
+        setCheckoutProgram(null);
+        setApplyNotes('');
+        showToast(`Application submitted to ${checkoutProgram.university} and synced to Firestore.`);
+        setActiveTab('applications');
+        return;
+      }
       const res = await fetch('/api/applications', {
         method: 'POST',
         headers: authHeaders,
@@ -383,6 +423,9 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       });
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Application failed');
+      if (auth.currentUser?.emailVerified && data.application) {
+        saveApplicationToFirestore(auth.currentUser.uid, data.application).catch(() => undefined);
+      }
       await onSyncNow();
       setCheckoutProgram(null);
       setApplyNotes('');
@@ -518,14 +561,21 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
 
     setAiMatching(true);
     try {
-      const profRes = await fetch('/api/user/profile', {
-        method: 'PATCH',
-        headers: authHeaders,
-        body: JSON.stringify({ academicProfile: updatedProfile }),
-      });
-      const profData = await safeReadJson(profRes);
-      if (!profRes.ok) throw new Error(profData.error || 'Profile update failed');
-      onUpdateUser(profData.user);
+      if (auth.currentUser?.emailVerified) {
+        syncUserProfileToFirestore(auth.currentUser.uid, {
+          academicProfile: updatedProfile,
+        }).catch(() => undefined);
+      }
+      if (!token.startsWith('firebase:')) {
+        const profRes = await fetch('/api/user/profile', {
+          method: 'PATCH',
+          headers: authHeaders,
+          body: JSON.stringify({ academicProfile: updatedProfile }),
+        });
+        const profData = await safeReadJson(profRes);
+        if (!profRes.ok) throw new Error(profData.error || 'Profile update failed');
+        onUpdateUser(profData.user);
+      }
 
       const res = await fetch('/api/ai/match-scholarships', {
         method: 'POST',
@@ -566,6 +616,24 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
         setBookingMentor(null);
         return;
       }
+      if (token.startsWith('firebase:') && auth.currentUser?.emailVerified) {
+        await saveBookingToFirestore(auth.currentUser.uid, {
+          id: `bk_${Date.now()}`,
+          studentId: auth.currentUser.uid,
+          studentName: user.name,
+          mentorId: bookingMentor.id,
+          mentorName: bookingMentor.name,
+          university: bookingMentor.university,
+          slot: payload.slot,
+          topic: payload.topic,
+          status: 'Confirmed',
+          createdAt: new Date().toISOString(),
+        });
+        setBookingMentor(null);
+        setBookingTopic('');
+        showToast(`1-on-1 session booked with ${bookingMentor.name} (Firestore synced).`);
+        return;
+      }
       const res = await fetch('/api/mentorship/book', {
         method: 'POST',
         headers: authHeaders,
@@ -573,6 +641,9 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       });
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Booking failed');
+      if (auth.currentUser?.emailVerified && data.booking) {
+        saveBookingToFirestore(auth.currentUser.uid, data.booking).catch(() => undefined);
+      }
       await onSyncNow();
       setBookingMentor(null);
       setBookingTopic('');
@@ -648,6 +719,33 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
         return;
       }
 
+      if (token.startsWith('firebase:') && auth.currentUser?.emailVerified) {
+        const fbDoc: EncryptedDocument = {
+          id: `doc_${Date.now()}`,
+          studentId: auth.currentUser.uid,
+          studentName: user.name,
+          fileName: vaultFile.name,
+          docType: vaultDocType,
+          sizeBytes: vaultFile.size,
+          algorithm: 'AES-256-GCM',
+          ivBase64: encrypted.ivBase64,
+          saltBase64: encrypted.saltBase64,
+          ciphertextBase64: encrypted.ciphertextBase64,
+          sha256Fingerprint: encrypted.sha256Fingerprint,
+          processingStatus: 'Encrypted & Verified',
+          uploadedAt: new Date().toISOString(),
+        };
+        await saveDocumentToFirestore(auth.currentUser.uid, fbDoc);
+        setLocalVaultDocs((prev) => [fbDoc, ...prev]);
+        if (!decryptPassphrase) setDecryptPassphrase(vaultPassphrase);
+        const uploadedName = vaultFile.name;
+        setVaultFile(null);
+        const okMsg = `Encrypted ${uploadedName} locally with AES-256-GCM and synced to Firestore.`;
+        setVaultSuccess(okMsg);
+        showToast(okMsg);
+        return;
+      }
+
       const res = await fetch('/api/documents', {
         method: 'POST',
         headers: authHeaders,
@@ -662,6 +760,11 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       if (data.document) {
         setLocalVaultDocs((prev) => [data.document as EncryptedDocument, ...prev]);
+        if (auth.currentUser?.emailVerified) {
+          saveDocumentToFirestore(auth.currentUser.uid, data.document as EncryptedDocument).catch(
+            () => undefined,
+          );
+        }
       }
       await onSyncNow();
       if (!decryptPassphrase) setDecryptPassphrase(vaultPassphrase);
@@ -781,6 +884,19 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
         showToast('Offline: Moderator message queued.');
         return;
       }
+      if (token.startsWith('firebase:') && auth.currentUser?.emailVerified) {
+        await saveMessageToFirestore(auth.currentUser.uid, {
+          id: `msg_${Date.now()}`,
+          studentId: auth.currentUser.uid,
+          studentName: user.name,
+          senderRole: 'student',
+          senderName: user.name,
+          content: text,
+          createdAt: new Date().toISOString(),
+          replied: false,
+        });
+        return;
+      }
       const res = await fetch('/api/messages', {
         method: 'POST',
         headers: authHeaders,
@@ -789,6 +905,10 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       if (!res.ok) {
         const d = await safeReadJson(res);
         throw new Error(d.error || 'Message failed');
+      }
+      const msgData = await safeReadJson(res);
+      if (auth.currentUser?.emailVerified && msgData.message) {
+        saveMessageToFirestore(auth.currentUser.uid, msgData.message).catch(() => undefined);
       }
       await onSyncNow();
     } catch (err) {
@@ -800,12 +920,30 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
     e.preventDefault();
     if (!feedbackMsg.trim()) return;
     try {
+      if (token.startsWith('firebase:') && auth.currentUser?.emailVerified) {
+        await saveFeedbackToFirestore(auth.currentUser.uid, {
+          id: `fb_${Date.now()}`,
+          userId: auth.currentUser.uid,
+          userName: user.name,
+          category: feedbackCat,
+          message: feedbackMsg.trim(),
+          status: 'Open',
+          createdAt: new Date().toISOString(),
+        });
+        setFeedbackMsg('');
+        showToast('Feedback recorded in Firestore. AI site-customization engine will review it.');
+        return;
+      }
       const res = await fetch('/api/feedback', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ category: feedbackCat, message: feedbackMsg }),
       });
       if (!res.ok) throw new Error('Feedback error');
+      const fbData = await safeReadJson(res);
+      if (auth.currentUser?.emailVerified && fbData.feedback) {
+        saveFeedbackToFirestore(auth.currentUser.uid, fbData.feedback).catch(() => undefined);
+      }
       setFeedbackMsg('');
       showToast('Feedback recorded. AI site-customization engine will review it.');
     } catch (err) {
@@ -855,13 +993,18 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
 
     setBillingLoading(true);
     try {
-      if (token.startsWith('static-preview:')) {
+      if (token.startsWith('static-preview:') || token.startsWith('firebase:')) {
         const invoiceId = `INV-${Math.random().toString(16).slice(2, 8).toUpperCase()}`;
         const updatedUser: PublicUser = {
           ...user,
           subscriptionTier: selectedTier,
           lastSyncedAt: new Date().toISOString(),
         };
+        if (auth.currentUser?.emailVerified) {
+          await syncUserProfileToFirestore(auth.currentUser.uid, {
+            subscriptionTier: selectedTier,
+          });
+        }
         onUpdateUser(updatedUser);
         setBillingReceipt({
           tier: selectedTier,
@@ -911,6 +1054,11 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
 
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Payment failed');
+      if (auth.currentUser?.emailVerified) {
+        syncUserProfileToFirestore(auth.currentUser.uid, {
+          subscriptionTier: selectedTier,
+        }).catch(() => undefined);
+      }
       onUpdateUser(data.user);
       setBillingReceipt({
         tier: selectedTier,
@@ -937,10 +1085,19 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
 
   const handleToggleMfa = async () => {
     try {
+      const nextMfa = !user.mfaEnabled;
+      if (auth.currentUser?.emailVerified) {
+        syncUserProfileToFirestore(auth.currentUser.uid, { mfaEnabled: nextMfa }).catch(() => undefined);
+      }
+      if (token.startsWith('firebase:')) {
+        onUpdateUser({ ...user, mfaEnabled: nextMfa });
+        showToast(`Multi-factor authentication ${nextMfa ? 'enabled' : 'disabled'}.`);
+        return;
+      }
       const res = await fetch('/api/user/profile', {
         method: 'PATCH',
         headers: authHeaders,
-        body: JSON.stringify({ mfaEnabled: !user.mfaEnabled }),
+        body: JSON.stringify({ mfaEnabled: nextMfa }),
       });
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Failed to update MFA');
@@ -952,8 +1109,16 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
   };
 
   const handleMarkNotificationsRead = async () => {
-    await fetch('/api/notifications/read', { method: 'POST', headers: authHeaders });
-    await onSyncNow();
+    if (auth.currentUser?.emailVerified) {
+      const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
+      if (unreadIds.length > 0) {
+        markNotificationsReadInFirestore(auth.currentUser.uid, unreadIds).catch(() => undefined);
+      }
+    }
+    if (!token.startsWith('firebase:')) {
+      await fetch('/api/notifications/read', { method: 'POST', headers: authHeaders });
+      await onSyncNow();
+    }
   };
 
   const navItems: { id: StudentTab; label: string; icon: React.ReactNode }[] = [
@@ -1031,49 +1196,50 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
       <div className="flex-1 md:pl-64 flex flex-col min-h-screen pb-20 md:pb-0">
         {/* Contextual Top Bar */}
         <header className="sticky top-0 z-30 h-14 px-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md flex items-center justify-between gap-2 sm:gap-4">
-          <div className="flex items-center gap-2 text-sm min-w-0">
+          <div className="flex items-center gap-2 text-sm min-w-0 flex-1">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
               aria-label="Open navigation menu"
-              className="md:hidden min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              className="md:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
             >
               <Menu className="w-4 h-4" />
             </button>
             <button
               type="button"
               onClick={onBackToPublic}
-              className="md:hidden font-display font-bold text-slate-900 dark:text-white truncate shrink-0"
+              className="md:hidden font-display text-base font-bold tracking-tight text-slate-900 dark:text-white truncate"
             >
               StudyGlobe
             </button>
             <span className="hidden md:inline text-slate-400">Student Portal</span>
             <span className="hidden md:inline text-slate-400">/</span>
-            <span className="font-semibold text-slate-900 dark:text-white truncate">
+            <span className="hidden md:inline font-semibold text-slate-900 dark:text-white truncate">
               {navItems.find((n) => n.id === activeTab)?.label}
             </span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={onToggleOfflineSim}
               title="Toggle offline mode simulation"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border transition-colors ${
+              className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border transition-colors ${
                 isOffline
                   ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
                   : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               }`}
             >
               {isOffline ? <WifiOff className="w-3.5 h-3.5" /> : <Cloud className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{isOffline ? 'Offline' : 'Online'}</span>
+              <span>{isOffline ? 'Offline' : 'Online'}</span>
             </button>
 
             <button
               type="button"
               onClick={handleSync}
               disabled={syncing || isOffline}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+              aria-label={t(language, 'syncNow')}
+              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
               <span className="hidden lg:inline">{t(language, 'syncNow')}</span>
@@ -1096,7 +1262,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
               type="button"
               onClick={onToggleDarkMode}
               aria-label="Toggle dark mode"
-              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              className="hidden sm:flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
@@ -1105,7 +1271,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
               type="button"
               onClick={() => setActiveTab('overview')}
               aria-label={`Notifications (${unreadCount} unread)`}
-              className="relative min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              className="relative min-h-[36px] min-w-[36px] px-2 flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <Bell className="w-4 h-4" />
               {unreadCount > 0 && (
@@ -1118,24 +1284,34 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('billing')}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-semibold rounded-lg border transition-colors ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap ${
                 user.subscriptionTier === 'free'
                   ? 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
                   : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
               }`}
             >
-              <CreditCard className="w-3.5 h-3.5" />
-              <span>{user.subscriptionTier === 'free' ? 'Upgrade Pro' : user.subscriptionTier.toUpperCase()}</span>
+              <CreditCard className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {user.subscriptionTier === 'free' ? (
+                  <>
+                    <span className="sm:hidden">Pro</span>
+                    <span className="hidden sm:inline">Upgrade Pro</span>
+                  </>
+                ) : (
+                  user.subscriptionTier.toUpperCase()
+                )}
+              </span>
             </button>
 
             <button
               type="button"
               onClick={onLogout}
               aria-label="Sign out"
-              className="md:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title="Sign Out"
+              className="md:hidden inline-flex items-center justify-center gap-1.5 min-h-[36px] min-w-[36px] px-2 sm:px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Sign Out</span>
+              <LogOut className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </header>
@@ -2729,7 +2905,50 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
             </nav>
 
             <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
-              <div className="text-xs">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={onToggleOfflineSim}
+                  className={`flex items-center justify-center gap-1.5 px-2.5 py-2 min-h-[38px] text-xs font-medium rounded-lg border transition-colors ${
+                    isOffline
+                      ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {isOffline ? <WifiOff className="w-3.5 h-3.5" /> : <Cloud className="w-3.5 h-3.5" />}
+                  <span>{isOffline ? 'Offline' : 'Online'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSync}
+                  disabled={syncing || isOffline}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-2 min-h-[38px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                  <span>{t(language, 'syncNow')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onToggleDarkMode}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-2 min-h-[38px] text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  {darkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                  <span>{darkMode ? 'Light' : 'Dark'}</span>
+                </button>
+                <select
+                  aria-label="Mobile drawer language"
+                  value={language}
+                  onChange={(e) => onChangeLanguage(e.target.value as LanguageCode)}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-2 min-h-[38px] text-xs font-medium text-slate-800 dark:text-slate-200"
+                >
+                  {(Object.keys(LANGUAGE_LABELS) as LanguageCode[]).map((c) => (
+                    <option key={c} value={c}>
+                      {c.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-xs pt-1">
                 <p className="font-semibold text-slate-900 dark:text-white truncate">{user.name}</p>
                 <p className="text-slate-500 dark:text-slate-400 truncate">{user.email}</p>
               </div>
